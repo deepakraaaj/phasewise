@@ -22,3 +22,9 @@ class SchemaResponse(BaseModel):
     session_id: str
     exposed_tables: List[str]
     tables: Dict[str, Any]
+
+class UserContext(BaseModel):
+    user_id: str
+    user_role: Optional[str] = "user"
+    company_id: Optional[int] = None
+    # Add other context fields as needed

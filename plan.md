@@ -1,3 +1,7 @@
+# ✅ UPDATED ARCHITECTURE PLAN (WITH USER CONTEXT HANDLING)
+
+---
+
 ## Phase 0 — Decisions (1–2 hours)
 
 **Hard rules (bake into code):**
@@ -8,6 +12,7 @@
 * ✅ UPDATE must have a WHERE filter (no mass updates)
 * ✅ Always parameterized queries (SQLAlchemy Core/ORM only)
 * ✅ Audit log everything
+* ✅ Executor layer enforces all rules (LLM cannot override)
 
 ---
 
@@ -15,16 +20,17 @@
 
 **Goal:** accept DB URL, connect, introspect.
 
-1. Create FastAPI app with endpoints:
+### 1. Create FastAPI app with endpoints:
 
-   * `POST /connect` → takes DB URL + credentials, stores connection profile (encrypted or in-memory for dev)
-   * `GET /schema` → returns discovered safe schema summary
-   * `POST /chat` → main conversation endpoint
+* `POST /connect` → takes DB URL + credentials
+* `GET /schema` → returns discovered safe schema summary
+* `POST /chat` → main conversation endpoint
 
-2. DB engine factory:
+### 2. DB engine factory:
 
-   * Create SQLAlchemy engine dynamically from URL
-   * Connection test + graceful errors
+* Create SQLAlchemy engine dynamically from URL
+* Connection test + graceful errors
+* Metadata reflection caching
 
 **Deliverable:** You can paste DB URL and confirm “connected”.
 
@@ -34,42 +40,61 @@
 
 **Goal:** reflect schema and decide what’s safe to expose.
 
-1. Reflect schema:
+### 1. Reflect schema:
 
-   * `MetaData().reflect(bind=engine)` (or `inspect(engine)` for incremental)
-2. Auto-filter tables (very important):
+* `MetaData().reflect(bind=engine)`
+* Or `inspect(engine)` for incremental
 
-   * Drop obvious system tables: `alembic_version`, `flyway_schema_history`, `django_migrations`, etc.
-   * Drop tables with names containing: `auth`, `token`, `secret`, `password`, `credential`, `session` (configurable)
-   * Drop tables without a primary key (or mark read-only)
-3. Build an **Entity Catalog** from reflected schema:
+### 2. Auto-filter tables (very important):
 
-   * table name, PK, columns, types, nullable, FK relationships, indexes (if detectable)
+* Drop system tables (`alembic_version`, etc.)
+* Drop auth/security tables
+* Drop secret/token/password-related tables
+* Drop tables without PK (or mark read-only)
 
-**Deliverable:** internal JSON “entity catalog” generated automatically.
+### 3. Build an Entity Catalog:
+
+For each table:
+
+* Table name
+* PK
+* Columns
+* Types
+* Nullable
+* Defaults
+* Indexes
+* FK relationships (optional)
+
+**Deliverable:** internal JSON entity catalog.
 
 ---
 
 ## Phase 3 — Auto-Generate “Conversational Forms” from Schema
 
-**Goal:** for each table, infer insert/update requirements automatically.
+**Goal:** dynamic CRUD capability per table.
 
 For each table:
 
-1. Infer **create_fields**:
+### 1. Infer `create_fields`
 
-   * required = non-nullable columns excluding PK + server defaults
-2. Infer **read_fields**:
+* Required = non-nullable - PK - server defaults
 
-   * pick representative columns (PK + 4–8 useful columns)
-3. Infer **filterable fields**:
+### 2. Infer `read_fields`
 
-   * indexed columns + PK + common identifiers (name/code/no/date/status)
-4. Infer **updateable fields**:
+* PK + representative columns
 
-   * exclude PK, created_at, created_by, audit columns unless allowed
+### 3. Infer `filterable_fields`
 
-**Deliverable:** the agent can ask missing fields for any table automatically.
+* Indexed columns
+* PK
+* Status/name/date/code fields
+
+### 4. Infer `updateable_fields`
+
+* Exclude PK
+* Exclude audit/system columns
+
+**Deliverable:** dynamic form inference per table.
 
 ---
 
@@ -77,161 +102,221 @@ For each table:
 
 **Goal:** fully conversational multi-turn flow.
 
-1. Store per-session state (Redis recommended):
+Store per session:
 
-   * `intent` (read/create/update)
-   * `entity`
-   * `stage` (idle → collecting → preview → confirm)
-   * `draft_payload` (fields collected so far)
-   * `filters` (for update/read)
-2. Add universal commands:
+```json
+{
+  "intent": "read|create|update",
+  "entity": "table",
+  "stage": "idle|collecting|preview|confirm",
+  "draft_payload": {},
+  "filters": []
+}
+```
 
-   * “cancel”, “start over”, “show draft”, “change X to Y”
+### Universal commands:
 
-**Deliverable:** bot asks follow-up questions until required fields are present.
+* cancel
+* start over
+* show draft
+* change X to Y
+* confirm
+
+**Deliverable:** conversational loop stability.
 
 ---
 
-## Phase 5 — LLM Layer (2 prompts + strict JSON)
+## Phase 5 — User Context Injection (Development Mode)
 
-**Goal:** LLM talks naturally but outputs strict structures.
+**Goal:** inject user identity for auditing and multi-tenant scoping (temporary implementation).**
+
+### Current Implementation:
+
+`POST /chat` accepts:
+
+```
+x-user-context: <base64_encoded_json>
+```
+
+Example raw JSON before encoding:
+
+```json
+{
+  "user_id": 42,
+  "user_role": "admin",
+  "company_id": 10
+}
+```
+
+Server flow:
+
+1. Decode Base64
+2. Parse JSON
+3. Extract `user_id`
+4. Inject into request object
+5. Attach to conversation state
+
+```python
+request.user_id = context_data["user_id"]
+```
+
+### ⚠ Current Mode: Trusted Internal Admin Environment Only
+
+This header is:
+
+* Not signed
+* Not cryptographically verified
+* Not production-secure
+
+**It is temporary for development.**
+
+---
+
+## Phase 6 — LLM Layer (Strict JSON, No SQL)
 
 ### A) Intent + Entity Detection
-
-LLM returns:
 
 ```json
 { "intent": "create|read|update|unknown", "entity": "table_name|null" }
 ```
 
-Entity must be chosen from the catalog list you provide.
-
 ### B) Field/Filter Extraction
-
-LLM returns:
 
 ```json
 {
-  "fields": { "colA": "value", "colB": 123 },
+  "fields": { "colA": "value" },
   "filters": [{ "field": "id", "op": "=", "value": 10 }]
 }
 ```
 
-Use `response_format: json_object` + Pydantic validation + retry-on-invalid.
+Requirements:
 
-**Deliverable:** LLM never emits SQL—only structured deltas to merge into state.
+* `response_format=json_object`
+* Pydantic validation
+* Retry on schema mismatch
+* LLM never generates SQL
 
----
-
-## Phase 6 — SQLAlchemy Execution Layer (No raw SQL)
-
-**Goal:** execute safely with hard guardrails.
-
-### SELECT executor
-
-* Always `LIMIT <= 100`
-* Disallow heavy joins initially (single-table only in v1)
-* Allow simple filters, date ranges, equals/like/IN
-
-### INSERT executor
-
-* Only allow columns inferred as create_fields
-* Block writing to forbidden fields (`id`, `created_at`, etc.)
-* Execute only after “confirm”
-
-### UPDATE executor
-
-* Require at least one filter
-* Before confirm: run “preview count” + show sample rows
-* After confirm: execute update + return affected rows
-
-**Deliverable:** safe CRUD without hallucinated SQL.
+**Deliverable:** LLM outputs structured plan only.
 
 ---
 
-## Phase 7 — Preview + Confirm UX (Mandatory)
+## Phase 7 — SQLAlchemy Execution Layer (Hard Guardrails)
 
-**Goal:** zero surprise writes.
+### SELECT
 
-For create/update:
+* Enforce `LIMIT <= 100`
+* No joins (v1)
+* Validate columns exist
+* Validate table exposed
 
-1. Show preview card/table:
+### INSERT
 
-   * what will be inserted/updated
-   * how many rows will be affected (for update)
-2. Require explicit confirmation:
+* Only allowed fields
+* No system columns
+* Preview required
+* Confirm required
 
-   * “confirm” / “proceed”
-3. Provide “modify” option:
+### UPDATE
 
-   * “change amount to 35000”
-   * “set due_date to 2026-03-30”
+* Require WHERE filter
+* Preview affected rows
+* Confirm required
+* Hard cap on max affected rows
 
-**Deliverable:** conversational form completion + final commit.
+Executor enforces rules, not LLM.
 
 ---
 
-## Phase 8 — Audit Logging + Replay
+## Phase 8 — Preview + Confirm UX
 
-**Goal:** enterprise-proof traceability.
+**Mandatory for writes**
 
-Create table `ai_audit_log`:
+Flow:
+
+1. Collect fields
+2. Show preview
+3. Show affected rows (update)
+4. Wait for explicit confirm
+5. Execute
+
+No implicit execution.
+
+---
+
+## Phase 9 — Audit Logging + Replay
+
+Create table:
+
+`ai_audit_log`
+
+Store:
 
 * timestamp
-* user/session id
-* raw user messages
-* generated intent/entity
+* user_id
+* session_id
+* raw user message
+* decoded context
+* detected intent/entity
 * extracted fields
-* final SQLAlchemy operation summary
-* rows returned / affected
-* errors + latency
+* validated execution plan
+* rows returned/affected
+* latency
+* error stack
 
-**Deliverable:** you can debug anything that happened.
-
----
-
-## Phase 9 — Hardening (Before real use)
-
-**Goal:** stop bad cases automatically.
-
-Add guards:
-
-* Reject UPDATE without WHERE
-* Reject queries that scan too much (optional: EXPLAIN cost check)
-* Rate limiting per user/session
-* Timeouts
-* “blocked tables” list configurable
-* “readonly mode” switch for emergency
-
-**Deliverable:** safe enough for internal admin usage.
+Every action traceable.
 
 ---
 
-## Phase 10 — V2 Enhancements (After it works)
+## Phase 10 — Hardening (Pre-Production Security Upgrade)
 
-* Multi-table join support via detected FKs (careful)
-* Soft delete support (still no hard delete)
-* RBAC (roles/permissions) — add last as you said
-* “skills” / “macros” (predefined actions like `mark_invoice_not_received`)
+Before release:
+
+### 1. Replace Base64 header with:
+
+* JWT (recommended)
+  OR
+* HMAC-signed header
+
+### 2. Add:
+
+* Secrets manager for DB URLs
+* Encrypted at rest storage
+* TLS DB connections
+* Least-privilege DB user
+* Statement timeout
+* Rate limiting
+* Sensitive column masking
+* Prompt injection test suite
+* EXPLAIN cost checks (optional)
+* Read-only emergency mode flag
 
 ---
 
-# What you’ll have at the end
+## Phase 11 — V2 Enhancements
 
-A **plug-and-play conversational DB admin**:
-
-✅ Paste DB URL → auto introspect
-✅ User chats naturally
-✅ System asks missing fields
-✅ Preview → confirm → commit
-✅ No SQL writing by user or LLM
-✅ No deletes
-✅ Audit log for everything
+* Multi-table joins
+* Soft delete support
+* RBAC
+* Macros / skills
+* Tenant policy engine
+* LLM fallback model logic
 
 ---
 
-If you want, I can give you next (pick one, I’ll just deliver it):
+# Final Outcome
 
-1. A full **FastAPI starter repo skeleton** (files + code) for this exact plan
-2. The **Pydantic schemas + prompts** (intent + extraction + confirmation)
-3. The **SQLAlchemy reflection + entity catalog builder** code (core of plug-and-play)
+A fully enterprise-grade:
+
+Plug DB URL → Conversational DB Admin Agent
+
+With:
+
+✅ Controlled execution
+✅ LLM planning only
+✅ No SQL hallucination
+✅ Preview-confirm writes
+✅ Audit trail
+✅ Upgradeable security model
+✅ Zero blind trust in LLM
+
+---

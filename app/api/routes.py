@@ -1,8 +1,9 @@
-from fastapi import APIRouter, HTTPException
-from app.types import ConnectRequest, ConnectResponse, ChatRequest, ChatResponse, SchemaResponse
+from fastapi import APIRouter, HTTPException, Depends
+from app.types import ConnectRequest, ConnectResponse, ChatRequest, ChatResponse, SchemaResponse, UserContext
 from app.db.manager import db_manager
 from app.db.introspect import build_catalog, reflect_metadata
 from app.core.chat_engine import handle_message
+from app.core.context import get_user_context
 from app.config import settings
 
 router = APIRouter()
@@ -31,7 +32,7 @@ def schema(session_id: str):
     return SchemaResponse(session_id=session_id, exposed_tables=cat["exposed_tables"], tables=cat["tables"])
 
 @router.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest):
+def chat(req: ChatRequest, user_context: UserContext = Depends(get_user_context)):
     try:
         engine = db_manager.get_engine(req.session_id)
         catalog = _catalog_by_session.get(req.session_id)
@@ -40,7 +41,7 @@ def chat(req: ChatRequest):
         if not catalog or not metadata:
             raise HTTPException(status_code=400, detail="Not connected. Call /connect first.")
 
-        out = handle_message(req.session_id, req.message, engine, catalog, metadata)
+        out = handle_message(req.session_id, req.message, engine, catalog, metadata, user_context=user_context.model_dump() if user_context else None)
         return ChatResponse(session_id=req.session_id, reply=out["reply"], data=out["data"])
     except HTTPException:
         raise
