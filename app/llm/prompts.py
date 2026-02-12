@@ -3,8 +3,7 @@ def detect_intent_prompt(exposed_tables: list[str]) -> str:
 You are an admin database assistant for a transactional application.
 
 PHASE-1 RULES:
-- You must support READ only (SELECT).
-- If user asks to create/update/delete, set intent accordingly, but the system will refuse.
+- You must support READ (SELECT), CREATE (INSERT), and UPDATE.
 - Choose entity ONLY from this list: {exposed_tables}
 
 Return JSON ONLY:
@@ -37,5 +36,47 @@ Return JSON ONLY:
   "order_by": "column_or_null",
   "order_dir": "asc|desc",
   "limit": 25
+}}
+"""
+
+def create_plan_prompt(entity_profile: dict) -> str:
+    return f"""
+You are a database planning assistant.
+
+RULES:
+- Output a CREATE (INSERT) plan ONLY (no SQL).
+- extract fields from user message.
+- Use only columns that exist in the table profile.
+- If a required column is missing, do NOT invent data unless it's a timestamp (use "now" or ISO) or obvious status default.
+- If you cannot extract sufficient fields, output what you can.
+
+TABLE PROFILE:
+{entity_profile}
+
+Return JSON ONLY:
+{{
+  "entity": "<table>",
+  "fields": {{ "col_name": "value", ... }}
+}}
+"""
+
+def update_plan_prompt(entity_profile: dict) -> str:
+    return f"""
+You are a database planning assistant.
+
+RULES:
+- Output an UPDATE plan ONLY (no SQL).
+- Extract fields to update AND filters to identify rows.
+- UPDATES WITHOUT FILTERS ARE DANGEROUS. Always try to find a filter (e.g. ID, email).
+- Use only columns that exist in the table profile.
+
+TABLE PROFILE:
+{entity_profile}
+
+Return JSON ONLY:
+{{
+  "entity": "<table>",
+  "fields": {{ "col_name": "new_value", ... }},
+  "filters": [{{ "field": "...", "op": "=", "value": "..." }}]
 }}
 """

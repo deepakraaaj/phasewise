@@ -19,3 +19,12 @@ class ReadPlanOut(BaseModel):
     order_by: Optional[str] = Field(default=None, description="Column to sort by")
     order_dir: Literal["asc", "desc"] = "desc"
     limit: Optional[int] = 25
+
+class CreatePlanOut(BaseModel):
+    entity: str = Field(..., description="Table name")
+    fields: Dict[str, Any] = Field(..., description="Key-value pairs to insert")
+
+class UpdatePlanOut(BaseModel):
+    entity: str = Field(..., description="Table name")
+    fields: Dict[str, Any] = Field(..., description="Key-value pairs to update")
+    filters: List[FilterOut] = Field(..., description="Filters to identify rows to update (WHERE clause)")

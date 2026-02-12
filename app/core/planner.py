@@ -1,7 +1,7 @@
 from typing import Any, Dict, Optional
 from app.config import settings
-from app.llm.prompts import detect_intent_prompt, read_plan_prompt
-from app.llm.schemas import DetectIntentOut, ReadPlanOut
+from app.llm.prompts import detect_intent_prompt, read_plan_prompt, create_plan_prompt, update_plan_prompt
+from app.llm.schemas import DetectIntentOut, ReadPlanOut, CreatePlanOut, UpdatePlanOut
 from app.llm.utils import parse_with_retry
 from app.db.guards import forbid_write_ops
 
@@ -12,3 +12,11 @@ def detect_intent(message: str, exposed_tables: list[str]) -> DetectIntentOut:
 def make_read_plan(message: str, entity: str, entity_profile: dict) -> ReadPlanOut:
     sys = read_plan_prompt(entity_profile)
     return parse_with_retry(settings.default_model, sys, message, ReadPlanOut)
+
+def make_create_plan(message: str, entity: str, entity_profile: dict) -> CreatePlanOut:
+    sys = create_plan_prompt(entity_profile)
+    return parse_with_retry(settings.default_model, sys, message, CreatePlanOut)
+
+def make_update_plan(message: str, entity: str, entity_profile: dict) -> UpdatePlanOut:
+    sys = update_plan_prompt(entity_profile)
+    return parse_with_retry(settings.default_model, sys, message, UpdatePlanOut)
