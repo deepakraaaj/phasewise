@@ -1,9 +1,9 @@
 from typing import Any, Dict, List, Optional
-from sqlalchemy import MetaData, Table, select, asc, desc
+from sqlalchemy import MetaData, Table, select, insert, update, asc, desc
 from sqlalchemy.engine import Engine
-from app.db.guards import clamp_limit
+from app.db.guards import clamp_limit, validate_update_filters, is_system_column, MAX_UPDATE_ROWS
 
-ALLOWED_OPS = {"read"}
+ALLOWED_OPS = {"read", "create", "update"}
 
 def _apply_filters(stmt, table: Table, filters: list[dict]):
 
@@ -70,3 +70,85 @@ def run_read(engine: Engine, metadata: MetaData, entity: str, columns: Optional[
     with engine.connect() as conn:
         res = conn.execute(stmt)
         return [dict(r._mapping) for r in res]
+
+def run_create(engine: Engine, metadata: MetaData, entity: str, fields: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute INSERT operation with guardrails"""
+    if entity not in metadata.tables:
+        raise ValueError("Unknown entity/table (not exposed).")
+    
+    table = metadata.tables[entity]
+    
+    # Filter fields to only include valid columns
+    safe_fields = {}
+    for col_name, val in fields.items():
+        if col_name in table.c:
+            # Skip auto-increment PKs and some system columns
+            col = table.c[col_name]
+            if col.primary_key and col.autoincrement:
+                continue
+            safe_fields[col_name] = val
+    
+    if not safe_fields:
+        raise ValueError("No valid fields to insert.")
+    
+    stmt = insert(table).values(**safe_fields)
+    
+    with engine.connect() as conn:
+        result = conn.execute(stmt)
+        conn.commit()
+        return {"inserted": result.rowcount, "fields": safe_fields}
+
+def preview_update(engine: Engine, metadata: MetaData, entity: str, filters: list[dict]) -> List[Dict[str, Any]]:
+    """Preview rows that would be affected by UPDATE"""
+    if entity not in metadata.tables:
+        raise ValueError("Unknown entity/table (not exposed).")
+    
+    validate_update_filters(filters)
+    
+    table = metadata.tables[entity]
+    
+    # Select all columns for preview
+    stmt = select(table).limit(MAX_UPDATE_ROWS)
+    stmt = _apply_filters(stmt, table, filters)
+    
+    with engine.connect() as conn:
+        res = conn.execute(stmt)
+        return [dict(r._mapping) for r in res]
+
+def run_update(engine: Engine, metadata: MetaData, entity: str, fields: Dict[str, Any], filters: list[dict]) -> Dict[str, Any]:
+    """Execute UPDATE operation with mandatory WHERE filters"""
+    if entity not in metadata.tables:
+        raise ValueError("Unknown entity/table (not exposed).")
+    
+    # CRITICAL: Require filters
+    validate_update_filters(filters)
+    
+    table = metadata.tables[entity]
+    
+    # Filter fields to exclude PKs and invalid columns
+    safe_fields = {}
+    for col_name, val in fields.items():
+        if col_name in table.c:
+            col = table.c[col_name]
+            # Don't allow updating PKs
+            if col.primary_key:
+                continue
+            safe_fields[col_name] = val
+    
+    if not safe_fields:
+        raise ValueError("No valid fields to update.")
+    
+    stmt = update(table).values(**safe_fields)
+    stmt = _apply_filters(stmt, table, filters)
+    
+    with engine.connect() as conn:
+        result = conn.execute(stmt)
+        conn.commit()
+        affected = result.rowcount
+        
+        # Safety check
+        if affected > MAX_UPDATE_ROWS:
+            conn.rollback()
+            raise ValueError(f"UPDATE would affect {affected} rows (max: {MAX_UPDATE_ROWS}). Aborted.")
+        
+        return {"updated": affected, "fields": safe_fields, "filters": filters}
