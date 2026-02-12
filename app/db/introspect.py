@@ -20,7 +20,13 @@ def build_catalog(engine: Engine) -> Dict[str, Any]:
         cols = insp.get_columns(t)
         pk = insp.get_pk_constraint(t) or {}
         pk_cols = pk.get("constrained_columns", []) if pk else []
+        
+        # Phase 2: Filter out tables without a primary key
+        if not pk_cols:
+            continue
+
         indexes = insp.get_indexes(t) or []
+        fks = insp.get_foreign_keys(t) or []
 
         tables[t] = {
             "table": t,
@@ -38,6 +44,15 @@ def build_catalog(engine: Engine) -> Dict[str, Any]:
                 {"name": i.get("name"), "column_names": i.get("column_names", [])}
                 for i in indexes
             ],
+            "foreign_keys": [
+                {
+                    "constrained_columns": fk.get("constrained_columns", []),
+                    "referred_schema": fk.get("referred_schema"),
+                    "referred_table": fk.get("referred_table"),
+                    "referred_columns": fk.get("referred_columns", []),
+                }
+                for fk in fks
+            ]
         }
         exposed.append(t)
 

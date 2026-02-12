@@ -15,7 +15,7 @@ DEFAULT_BLOCK_PATTERNS = [
     r".*credential.*",
     r".*session.*",
     r"^auth_.*",
-    r"^users?$",
+    r"^users?$",  # Often sensitive, usually has pii/auth data
 ]
 
 def is_blocked_table(table_name: str, patterns: List[str] = DEFAULT_BLOCK_PATTERNS) -> bool:
